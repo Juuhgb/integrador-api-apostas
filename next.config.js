@@ -1,9 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  turbopack: {
-    resolveAlias: {
-      '@': './src',
-    },
+  async rewrites() {
+    return [
+      {
+        source: '/integrador/:path*',
+        destination: 'https://integrador-api-production.up.railway.app/:path*',
+      },
+    ];
   },
 };
 

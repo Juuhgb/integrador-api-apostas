@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { apiClient, saveToken, getToken, clearToken } from '@/lib/api-client';
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState('apostadores');
@@ -11,12 +12,21 @@ export default function Page() {
   const [loginErro, setLoginErro] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
 
-  // Ao montar, verifica se já está autenticado no servidor
+  // Ao montar, verifica se já está autenticado
   useEffect(() => {
-    fetch('/api/auth/apostas')
-      .then(res => res.json())
-      .then(d => setAutenticado(d.autenticado))
-      .catch(() => setAutenticado(false));
+    const token = getToken();
+    if (!token) {
+      setAutenticado(false);
+      return;
+    }
+    
+    // Verifica status da sessão no integrador
+    apiClient('/auth/status')
+      .then(d => setAutenticado(!!d.sessaoAtiva))
+      .catch(() => {
+        clearToken();
+        setAutenticado(false);
+      });
   }, []);
 
   const handleLogin = async (e) => {
@@ -24,19 +34,42 @@ export default function Page() {
     setLoginLoading(true);
     setLoginErro('');
     try {
-      const res = await fetch('/api/auth/apostas', {
+      // Usa o mesmo usuário/senha para o integrador e para todas as APIs externas.
+      // O integrador tentará registrar automaticamente se o usuário não existir.
+      const payload = {
+        usuario: loginForm.usuario,
+        senha: loginForm.senha,
+        credenciaisExternas: {
+          apostas1:     { usuario: loginForm.usuario, senha: loginForm.senha },
+          apostadores1: { usuario: loginForm.usuario, senha: loginForm.senha },
+          lutas2:        { usuario: loginForm.usuario, senha: loginForm.senha },
+        },
+      };
+
+      const d = await apiClient('/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginForm)
+        body: JSON.stringify(payload)
       });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || 'Erro ao fazer login.');
+      
+      if (!d.token) throw new Error('Token não retornado pelo servidor.');
+      
+      saveToken(d.token);
       setAutenticado(true);
     } catch (err) {
       setLoginErro(err.message);
     } finally {
       setLoginLoading(false);
     }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiClient('/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error(e);
+    }
+    clearToken();
+    setAutenticado(false);
   };
 
   // ── Verificando autenticação inicial ──
@@ -69,7 +102,6 @@ export default function Page() {
               <div className="form-group">
                 <label>Usuário</label>
                 <input
-                  id="global-usuario"
                   required
                   autoFocus
                   placeholder="Seu usuário"
@@ -80,7 +112,6 @@ export default function Page() {
               <div className="form-group">
                 <label>Senha</label>
                 <input
-                  id="global-senha"
                   type="password"
                   required
                   placeholder="Sua senha"
@@ -94,7 +125,7 @@ export default function Page() {
                 className="btn btn-full"
                 disabled={loginLoading}
               >
-                {loginLoading ? 'AUTENTICANDO...' : 'ENTRAR (POST /AUTH/LOGIN)'}
+                {loginLoading ? 'AUTENTICANDO...' : 'ENTRAR'}
               </button>
             </form>
           </div>
@@ -109,13 +140,14 @@ export default function Page() {
         <a href="#" className="header-logo">UFC<span>BET</span></a>
         <div className="header-auth">
           <span className="user-badge">🟢 Online</span>
+          <button className="btn danger" style={{marginLeft: '15px', padding: '5px 10px'}} onClick={handleLogout}>Sair</button>
         </div>
       </header>
 
       <section className="hero">
         <div className="hero-content">
-          <div className="hero-subtitle" style={{ fontSize: '2rem' }}>UFC 300</div>
-          <h1 className="hero-title" style={{ fontSize: '6rem' }}>PEREIRA VS HILL</h1>
+          <div className="hero-subtitle" style={{ fontSize: '2rem' }}>Jacarés no ladrilho</div>
+          <h1 className="hero-title" style={{ fontSize: '6rem' }}>Zézinho vs Iguinho</h1>
         </div>
       </section>
 
@@ -149,8 +181,7 @@ function ApostadoresPanel() {
 
   const loadData = () => {
     setLoading(true);
-    fetch('/api/apostadores')
-      .then(res => res.json())
+    apiClient('/apostadores')
       .then(d => { setData(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(e => { console.error(e); setLoading(false); });
   };
@@ -159,9 +190,8 @@ function ApostadoresPanel() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    await fetch('/api/apostadores', {
+    await apiClient('/apostadores', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...formData, idade: Number(formData.idade) })
     });
     setModalOpen(false);
@@ -169,9 +199,9 @@ function ApostadoresPanel() {
     loadData();
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, instancia) => {
     if(confirm('Tem certeza?')) {
-      await fetch(`/api/apostadores/${id}`, { method: 'DELETE' });
+      await apiClient(`/apostadores/${id}?instancia=${instancia || 1}`, { method: 'DELETE' });
       loadData();
     }
   };
@@ -182,20 +212,21 @@ function ApostadoresPanel() {
       {loading ? <div className="loading">Carregando...</div> : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>Nome</th><th>Idade</th><th>Chave PIX</th><th>Ações</th></tr></thead>
+            <thead><tr><th>ID</th><th>Nome</th><th>Idade</th><th>Chave PIX</th><th>Instância</th><th>Ações</th></tr></thead>
             <tbody>
               {data.map(item => (
-                <tr key={item.id}>
+                <tr key={`${item.id}-${item._instancia}`}>
                   <td>{item.id}</td>
                   <td>{item.nome}</td>
                   <td>{item.idade}</td>
-                  <td>{item.chave_pix}</td>
+                  <td>{item.chave_pix || item.chavePix}</td>
+                  <td>I{item._instancia}</td>
                   <td className="actions">
-                    <button className="btn danger" onClick={() => handleDelete(item.id)}>Excluir</button>
+                    <button className="btn danger" onClick={() => handleDelete(item.id, item._instancia)}>Excluir</button>
                   </td>
                 </tr>
               ))}
-              {data.length === 0 && <tr><td colSpan={5} style={{textAlign: 'center'}}>Nenhum registro encontrado.</td></tr>}
+              {data.length === 0 && <tr><td colSpan={6} style={{textAlign: 'center'}}>Nenhum registro encontrado.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -238,13 +269,12 @@ function LutadoresPanel() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ nome: '', apelido: '', categoria: '1', arte: '1' });
+  const [formData, setFormData] = useState({ nome: '', apelido: '', peso: '', categoria: '1', arte: '1' });
 
   const loadData = () => {
     setLoading(true);
     setErro('');
-    fetch('/api/lutadores')
-      .then(res => res.json())
+    apiClient('/lutadores')
       .then(d => {
         if (d && d.error) { setErro(d.error); setData([]); }
         else { setData(Array.isArray(d) ? d : []); }
@@ -257,19 +287,21 @@ function LutadoresPanel() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    await fetch('/api/lutadores', {
+    await apiClient('/lutadores', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
+      body: JSON.stringify({
+        ...formData,
+        peso: formData.peso ? Number(formData.peso) : 80.0
+      })
     });
     setModalOpen(false);
-    setFormData({ nome: '', apelido: '', categoria: '1', arte: '1' });
+    setFormData({ nome: '', apelido: '', peso: '', categoria: '1', arte: '1' });
     loadData();
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, instancia) => {
     if(confirm('Tem certeza?')) {
-      await fetch(`/api/lutadores/${id}`, { method: 'DELETE' });
+      await apiClient(`/lutadores/${id}?instancia=${instancia || 1}`, { method: 'DELETE' });
       loadData();
     }
   };
@@ -279,32 +311,33 @@ function LutadoresPanel() {
       <h2>Lutadores <button className="btn" onClick={() => setModalOpen(true)}>+ Novo</button></h2>
 
       {loading ? (
-        <div className="loading">Carregando (Handshake RSA)...</div>
+        <div className="loading">Carregando...</div>
       ) : erro ? (
         <div className="api-erro">
           <div className="api-erro-icon">⚠️</div>
-          <p><strong>Erro ao conectar com a API de Lutadores</strong></p>
+          <p><strong>Erro ao conectar com a API</strong></p>
           <p className="api-erro-msg">{erro}</p>
           <button className="btn" onClick={loadData}>↻ Tentar novamente</button>
         </div>
       ) : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>Nome</th><th>Apelido</th><th>Categoria</th><th>Arte</th><th>Ações</th></tr></thead>
+            <thead><tr><th>ID</th><th>Nome</th><th>Apelido / Peso</th><th>Categoria</th><th>Arte</th><th>Instância</th><th>Ações</th></tr></thead>
             <tbody>
               {data.map(item => (
-                <tr key={item.id}>
+                <tr key={`${item.id}-${item._instancia}`}>
                   <td>{item.id}</td>
                   <td>{item.nome}</td>
-                  <td>{item.apelido}</td>
+                  <td>{item.apelido || `${item.peso}kg`}</td>
                   <td>{item.categoria}</td>
-                  <td>{item.arte}</td>
+                  <td>{item.arte || '-'}</td>
+                  <td>I{item._instancia}</td>
                   <td className="actions">
-                    <button className="btn danger" onClick={() => handleDelete(item.id)}>Excluir</button>
+                    <button className="btn danger" onClick={() => handleDelete(item.id, item._instancia)}>Excluir</button>
                   </td>
                 </tr>
               ))}
-              {data.length === 0 && <tr><td colSpan={6} style={{textAlign: 'center'}}>Nenhum registro encontrado.</td></tr>}
+              {data.length === 0 && <tr><td colSpan={7} style={{textAlign: 'center'}}>Nenhum registro encontrado.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -320,19 +353,19 @@ function LutadoresPanel() {
                 <input required value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} />
               </div>
               <div className="form-group">
-                <label>Apelido</label>
-                <input required value={formData.apelido} onChange={e => setFormData({...formData, apelido: e.target.value})} />
+                <label>Apelido (I2)</label>
+                <input value={formData.apelido} onChange={e => setFormData({...formData, apelido: e.target.value})} />
               </div>
               <div className="form-group">
-                <label>Categoria (1,2,3)</label>
-                <select value={formData.categoria} onChange={e => setFormData({...formData, categoria: e.target.value})}>
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                </select>
+                <label>Peso em Kg (I1)</label>
+                <input type="number" step="0.1" value={formData.peso} onChange={e => setFormData({...formData, peso: e.target.value})} />
               </div>
               <div className="form-group">
-                <label>Arte Marcial (1=Boxe, 2=Karatê, 3=Muay Thai)</label>
+                <label>Categoria (1,2,3 ou Texto)</label>
+                <input required value={formData.categoria} onChange={e => setFormData({...formData, categoria: e.target.value})} />
+              </div>
+              <div className="form-group">
+                <label>Arte Marcial (I2)</label>
                 <select value={formData.arte} onChange={e => setFormData({...formData, arte: e.target.value})}>
                   <option value="1">Boxe</option>
                   <option value="2">Karatê</option>
@@ -362,8 +395,7 @@ function LutasPanel() {
 
   const loadData = () => {
     setLoading(true);
-    fetch('/api/lutas')
-      .then(res => res.json())
+    apiClient('/lutas')
       .then(d => { setData(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(e => { console.error(e); setLoading(false); });
   };
@@ -372,9 +404,8 @@ function LutasPanel() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    await fetch('/api/lutas', {
+    await apiClient('/lutas', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...formData, lutador1: Number(formData.lutador1), lutador2: Number(formData.lutador2) })
     });
     setModalOpen(false);
@@ -382,9 +413,9 @@ function LutasPanel() {
     loadData();
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, instancia) => {
     if(confirm('Tem certeza?')) {
-      await fetch(`/api/lutas/${id}`, { method: 'DELETE' });
+      await apiClient(`/lutas/${id}?instancia=${instancia || 1}`, { method: 'DELETE' });
       loadData();
     }
   };
@@ -395,21 +426,22 @@ function LutasPanel() {
       {loading ? <div className="loading">Carregando...</div> : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>Data</th><th>Horário</th><th>Lutador 1</th><th>Lutador 2</th><th>Ações</th></tr></thead>
+            <thead><tr><th>ID</th><th>Data</th><th>Horário</th><th>Lutador 1</th><th>Lutador 2</th><th>Instância</th><th>Ações</th></tr></thead>
             <tbody>
               {data.map(item => (
-                <tr key={item.id}>
+                <tr key={`${item.id}-${item._instancia}`}>
                   <td>{item.id}</td>
                   <td>{item.data}</td>
                   <td>{item.horario}</td>
                   <td>ID: {item.lutador1}</td>
                   <td>ID: {item.lutador2}</td>
+                  <td>I{item._instancia}</td>
                   <td className="actions">
-                    <button className="btn danger" onClick={() => handleDelete(item.id)}>Excluir</button>
+                    <button className="btn danger" onClick={() => handleDelete(item.id, item._instancia)}>Excluir</button>
                   </td>
                 </tr>
               ))}
-              {data.length === 0 && <tr><td colSpan={6} style={{textAlign: 'center'}}>Nenhuma luta encontrada.</td></tr>}
+              {data.length === 0 && <tr><td colSpan={7} style={{textAlign: 'center'}}>Nenhuma luta encontrada.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -452,7 +484,6 @@ function LutasPanel() {
 // APOSTAS PANEL
 // ----------------------------------------------------
 function ApostasPanel() {
-  // Estados de dados
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -460,8 +491,7 @@ function ApostasPanel() {
 
   const loadData = () => {
     setLoading(true);
-    fetch('/api/apostas')
-      .then(res => res.json())
+    apiClient('/apostas')
       .then(d => { setData(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(e => { console.error(e); setLoading(false); });
   };
@@ -470,9 +500,8 @@ function ApostasPanel() {
 
   const handleSave = async (e) => {
     e.preventDefault();
-    await fetch('/api/apostas', {
+    await apiClient('/apostas', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         valor: Number(formData.valor), 
         id_luta: Number(formData.id_luta), 
@@ -485,9 +514,9 @@ function ApostasPanel() {
     loadData();
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, instancia) => {
     if(confirm('Tem certeza?')) {
-      await fetch(`/api/apostas/${id}`, { method: 'DELETE' });
+      await apiClient(`/apostas/${id}?instancia=${instancia || 1}`, { method: 'DELETE' });
       loadData();
     }
   };
@@ -495,24 +524,25 @@ function ApostasPanel() {
   return (
     <div className="panel">
       <h2>Apostas <button className="btn" onClick={() => setModalOpen(true)}>+ Nova</button></h2>
-      {loading ? <div className="loading">Carregando (JWT Auth)...</div> : (
+      {loading ? <div className="loading">Carregando...</div> : (
         <div className="table-wrapper">
           <table>
-            <thead><tr><th>ID</th><th>Valor</th><th>Apostador</th><th>Luta</th><th>Lutador</th><th>Ações</th></tr></thead>
+            <thead><tr><th>ID</th><th>Valor</th><th>Apostador</th><th>Luta</th><th>Lutador</th><th>Instância</th><th>Ações</th></tr></thead>
             <tbody>
               {data.map(item => (
-                <tr key={item.id}>
+                <tr key={`${item.id}-${item._instancia}`}>
                   <td>{item.id}</td>
                   <td>R$ {item.valor}</td>
-                  <td>ID: {item.id_apostador}</td>
+                  <td>ID: {item.id_apostador || '-'}</td>
                   <td>ID: {item.id_luta}</td>
-                  <td>ID: {item.id_lutador}</td>
+                  <td>ID: {item.id_lutador || '-'}</td>
+                  <td>I{item._instancia}</td>
                   <td className="actions">
-                    <button className="btn danger" onClick={() => handleDelete(item.id)}>Excluir</button>
+                    <button className="btn danger" onClick={() => handleDelete(item.id, item._instancia)}>Excluir</button>
                   </td>
                 </tr>
               ))}
-              {data.length === 0 && <tr><td colSpan={6} style={{textAlign: 'center'}}>Nenhuma aposta encontrada.</td></tr>}
+              {data.length === 0 && <tr><td colSpan={7} style={{textAlign: 'center'}}>Nenhuma aposta encontrada.</td></tr>}
             </tbody>
           </table>
         </div>

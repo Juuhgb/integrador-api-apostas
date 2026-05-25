@@ -123,6 +123,7 @@ h1, h2, h3, h4, h5, h6 {
   max-width: 1400px;
   margin: 0 auto;
   padding: 2rem;
+  padding-bottom: 15vh; /* Evita tremedeira (jitter) no scroll ao fazer hover na última linha */
   position: relative;
   z-index: 10;
   margin-top: -60px; /* Pull up over hero slightly */
